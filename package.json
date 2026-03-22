@@ -1,0 +1,12 @@
+{
+  "name": "ai-chatbot-ui",
+  "version": "1.0.0",
+  "description": "Premium AI Chatbot UI",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve -l 8080"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
