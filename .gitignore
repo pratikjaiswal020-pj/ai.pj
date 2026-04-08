@@ -17,10 +17,6 @@ __pycache__/
 *.env
 backend/.env
 
-# Supabase
-supabase/.temp/
-supabase/functions/.env
-
 # IDEs
 .vscode/
 
