@@ -4,7 +4,9 @@
   "description": "Premium AI Chatbot UI",
   "main": "index.html",
   "scripts": {
-    "start": "npx serve -l 8080"
+    "start": "npx serve -l 8080",
+    "backend": "cd backend && venv\\Scripts\\python -m uvicorn app.main:app --host 127.0.0.1 --port 5000",
+    "dev": "concurrently \"npm start\" \"npm run backend\""
   },
   "keywords": [],
   "author": "",

@@ -1,19 +1,26 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // ──────────────────────────────────────────
+    // CONFIGURATION
+    // ──────────────────────────────────────────
+    const API_URL = 'http://127.0.0.1:5000/api';
+    let authToken = localStorage.getItem('authToken');
+    let currentUser = JSON.parse(localStorage.getItem('currentUser') || 'null');
+
+    // DOM Elements
     const messageContainer = document.getElementById('chat-messages');
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
     const typingStatus = document.querySelector('.typing-status');
     const themeToggle = document.getElementById('theme-toggle');
-    const sunIcon = themeToggle.querySelector('.sun');
-    const moonIcon = themeToggle.querySelector('.moon');
     const historyList = document.getElementById('history-list');
     const newChatBtn = document.getElementById('new-chat-btn');
 
     const settingsBtn = document.getElementById('settings-btn');
     const settingsModal = document.getElementById('settings-modal');
     const closeSettingsBtn = document.getElementById('close-settings-btn');
-    const modelSelect = document.getElementById('model-select');
     const systemPromptInput = document.getElementById('system-prompt-input');
+    const modelSelect = document.getElementById('model-select');
+
     const themeSelect = document.getElementById('theme-select');
     const fontSizeSelect = document.getElementById('font-size-select');
     const enterToSendToggle = document.getElementById('enter-to-send-toggle');
@@ -25,51 +32,71 @@ document.addEventListener('DOMContentLoaded', () => {
     const imagePreview = document.getElementById('image-preview');
     const removeImageBtn = document.getElementById('remove-image-btn');
 
-    let selectedImageBase64 = null;
+    // Auth elements
+    const authOverlay = document.getElementById('auth-overlay');
+    const authTitle = document.getElementById('auth-title');
+    const authEmail = document.getElementById('auth-email');
+    const authPassword = document.getElementById('auth-password');
+    const authUsername = document.getElementById('auth-username-group');
+    const authUsernameInput = document.getElementById('auth-username');
+    const authSubmitBtn = document.getElementById('auth-submit-btn');
+    const authToggleBtn = document.getElementById('auth-toggle-btn');
+    const authError = document.getElementById('auth-error');
+    const profileName = document.querySelector('.profile-name');
+    const logoutBtn = document.getElementById('logout-btn');
 
-    // Default Settings
+    let isLoginMode = true;
+    let selectedImageBase64 = null;
+    let mermaidTheme = null;
+    let mermaidRenderSequence = 0;
+    let currentSessionId = null;
+
+    // ──────────────────────────────────────────
+    // SETTINGS
+    // ──────────────────────────────────────────
+
     let settings = {
-        model: 'gemini-2.0-flash',
         systemPrompt: '',
+        preferredModel: 'gemini',
         theme: 'dark',
         fontSize: '15px',
         enterToSend: true,
         showTimestamps: true
     };
 
-    // Load Settings
+
     function loadSettings() {
         const saved = localStorage.getItem('chat_settings');
         if (saved) {
             settings = { ...settings, ...JSON.parse(saved) };
         }
-        
-        // Update UI
-        modelSelect.value = settings.model;
-        systemPromptInput.value = settings.systemPrompt;
-        themeSelect.value = settings.theme;
-        fontSizeSelect.value = settings.fontSize;
-        enterToSendToggle.checked = settings.enterToSend;
-        showTimestampsToggle.checked = settings.showTimestamps;
+        if (systemPromptInput) systemPromptInput.value = settings.systemPrompt;
+        if (modelSelect) modelSelect.value = settings.preferredModel || 'gemini';
+        if (themeSelect) themeSelect.value = settings.theme;
+        if (fontSizeSelect) fontSizeSelect.value = settings.fontSize;
+        if (enterToSendToggle) enterToSendToggle.checked = settings.enterToSend;
+        if (showTimestampsToggle) showTimestampsToggle.checked = settings.showTimestamps;
 
         applyVisualSettings();
     }
 
     function saveSettings() {
         settings = {
-            model: modelSelect.value,
-            systemPrompt: systemPromptInput.value,
-            theme: themeSelect.value,
-            fontSize: fontSizeSelect.value,
-            enterToSend: enterToSendToggle.checked,
-            showTimestamps: showTimestampsToggle.checked
+            systemPrompt: systemPromptInput ? systemPromptInput.value : '',
+            preferredModel: modelSelect ? modelSelect.value : 'gemini',
+            theme: themeSelect ? themeSelect.value : 'dark',
+            fontSize: fontSizeSelect ? fontSizeSelect.value : '15px',
+            enterToSend: enterToSendToggle ? enterToSendToggle.checked : true,
+            showTimestamps: showTimestampsToggle ? showTimestampsToggle.checked : true
         };
+
         localStorage.setItem('chat_settings', JSON.stringify(settings));
         applyVisualSettings();
     }
 
     function applyVisualSettings() {
-        // Apply Theme
+        const previousTheme = document.documentElement.getAttribute('data-theme');
+
         if (settings.theme === 'system') {
             const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
             document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
@@ -77,23 +104,41 @@ document.addEventListener('DOMContentLoaded', () => {
             document.documentElement.setAttribute('data-theme', settings.theme);
         }
 
-        // Apply Font Size
         document.documentElement.style.setProperty('--font-size-base', settings.fontSize);
-        // We'll update the CSS to use this variable for message content
-        
-        // Toggle timestamps visibility
         document.body.classList.toggle('hide-timestamps', !settings.showTimestamps);
+
+        const currentTheme = document.documentElement.getAttribute('data-theme');
+        if (previousTheme !== currentTheme) {
+            initializeMermaid(true);
+            rerenderBotMessages();
+        }
+
+        // Update active model badge
+        const activeModelBadge = document.getElementById('active-model-badge');
+        if (activeModelBadge) {
+            const modelNames = {
+                'gemini': 'Gemini 2.0',
+                'claude': 'Claude 3.5',
+                'openai': 'GPT-4',
+                'gemma': 'Gemma 4'
+            };
+            activeModelBadge.textContent = modelNames[settings.preferredModel] || 'Gemini 2.0';
+        }
     }
 
     // Modal Events
-    settingsBtn.addEventListener('click', () => {
-        settingsModal.style.display = 'flex';
-    });
+    if (settingsBtn) {
+        settingsBtn.addEventListener('click', () => {
+            settingsModal.style.display = 'flex';
+        });
+    }
 
-    closeSettingsBtn.addEventListener('click', () => {
-        settingsModal.style.display = 'none';
-        saveSettings();
-    });
+    if (closeSettingsBtn) {
+        closeSettingsBtn.addEventListener('click', () => {
+            settingsModal.style.display = 'none';
+            saveSettings();
+        });
+    }
 
     window.addEventListener('click', (e) => {
         if (e.target === settingsModal) {
@@ -101,98 +146,218 @@ document.addEventListener('DOMContentLoaded', () => {
             saveSettings();
         }
     });
-    
-    // Clear Chats logic
-    clearChatsBtn.addEventListener('click', async () => {
-        if (confirm('Are you sure you want to delete all conversations? This cannot be undone.')) {
+
+    // ──────────────────────────────────────────
+    // AUTHENTICATION
+    // ──────────────────────────────────────────
+
+    function showAuth() {
+        if (authOverlay) authOverlay.style.display = 'flex';
+    }
+
+    function hideAuth() {
+        if (authOverlay) authOverlay.style.display = 'none';
+    }
+
+    function toggleAuthMode() {
+        isLoginMode = !isLoginMode;
+        if (authTitle) authTitle.textContent = isLoginMode ? 'Welcome Back' : 'Create Account';
+        if (authSubmitBtn) authSubmitBtn.textContent = isLoginMode ? 'Sign In' : 'Sign Up';
+        if (authToggleBtn) authToggleBtn.innerHTML = isLoginMode
+            ? "Don't have an account? <strong>Sign Up</strong>"
+            : "Already have an account? <strong>Sign In</strong>";
+        if (authUsername) authUsername.style.display = isLoginMode ? 'none' : 'block';
+        if (authError) authError.style.display = 'none';
+    }
+
+    if (authToggleBtn) {
+        authToggleBtn.addEventListener('click', toggleAuthMode);
+    }
+
+    if (authSubmitBtn) {
+        authSubmitBtn.addEventListener('click', handleAuth);
+    }
+
+    const guestLoginBtn = document.getElementById('guest-login-btn');
+    if (guestLoginBtn) {
+        guestLoginBtn.addEventListener('click', async () => {
             try {
-                // 1. Count rows before delete so we can identify RLS-blocked deletes.
-                const { count: existingMsgCount, error: existingMsgError } = await supabase
-                    .from('chat_messages')
-                    .select('id', { count: 'exact', head: true });
+                const response = await fetch(`${API_URL}/auth/guest`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
 
-                if (existingMsgError) throw existingMsgError;
+                if (!response.ok) throw new Error('Guest login failed');
 
-                const { count: existingSessionCount, error: existingSessionError } = await supabase
-                    .from('chat_sessions')
-                    .select('id', { count: 'exact', head: true });
-
-                if (existingSessionError) throw existingSessionError;
-
-                if ((existingMsgCount ?? 0) === 0 && (existingSessionCount ?? 0) === 0) {
-                    alert('No chats found to delete.');
-                    localStorage.removeItem('chat_session_id');
-                    location.reload();
-                    return;
+                const data = await response.json();
+                if (data.access_token) {
+                    authToken = data.access_token;
+                    currentUser = data.user;
+                    localStorage.setItem('authToken', authToken);
+                    localStorage.setItem('currentUser', JSON.stringify(currentUser));
+                    hideAuth();
+                    initializeApp();
                 }
-
-                // 2. Delete all messages first
-                const { error: msgError, count: msgCount } = await supabase
-                    .from('chat_messages')
-                    .delete({ count: 'exact' })
-                    .not('id', 'is', 'null');
-                
-                if (msgError) throw msgError;
-
-                // 3. Delete all sessions
-                const { error: sessionError, count: sessionCount } = await supabase
-                    .from('chat_sessions')
-                    .delete({ count: 'exact' })
-                    .not('id', 'is', 'null');
-                
-                if (sessionError) throw sessionError;
-
-                console.log(`Deleted ${msgCount} messages and ${sessionCount} sessions.`);
-
-                const deletedMessages = msgCount ?? 0;
-                const deletedSessions = sessionCount ?? 0;
-
-                if (deletedMessages === 0 && deletedSessions === 0) {
-                    alert(
-                        `No chats were deleted.\n\n` +
-                        `Supabase still had ${existingMsgCount ?? 0} messages and ${existingSessionCount ?? 0} sessions before delete.\n\n` +
-                        `This usually means Row Level Security (RLS) allows SELECT but blocks DELETE. ` +
-                        `Add DELETE policies for chat_messages and chat_sessions, then try again.`
-                    );
-                    return;
-                }
-
-                // 4. Clear local session state and reload
-                localStorage.removeItem('chat_session_id');
-                location.reload();
-            } catch (err) {
-                console.error('Error clearing chats:', err);
-                alert('Failed to clear chats: ' + (err.message || 'Unknown error'));
+            } catch (error) {
+                showAuthError("Can't connect to server. Check your backend.");
             }
+        });
+    }
+
+    // Allow Enter to submit auth form
+    [authEmail, authPassword, authUsernameInput].forEach(el => {
+        if (el) {
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') handleAuth();
+            });
         }
     });
+
+    async function handleAuth() {
+        const email = authEmail ? authEmail.value.trim() : '';
+        const password = authPassword ? authPassword.value.trim() : '';
+        const username = authUsernameInput ? authUsernameInput.value.trim() : '';
+
+        if (!email || !password) {
+            showAuthError('Please enter email and password');
+            return;
+        }
+
+        authSubmitBtn.disabled = true;
+        authSubmitBtn.textContent = 'Loading...';
+
+        try {
+            const endpoint = isLoginMode ? '/auth/login' : '/auth/register';
+            const body = isLoginMode
+                ? { email, password }
+                : { email, password, username: username || email.split('@')[0] };
+
+            const response = await fetch(`${API_URL}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || 'Authentication failed');
+            }
+
+            if (data.access_token) {
+                authToken = data.access_token;
+                currentUser = data.user;
+                localStorage.setItem('authToken', authToken);
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+                hideAuth();
+                initializeApp();
+            }
+        } catch (error) {
+            showAuthError(error.message);
+        } finally {
+            authSubmitBtn.disabled = false;
+            authSubmitBtn.textContent = isLoginMode ? 'Sign In' : 'Sign Up';
+        }
+    }
+
+    function showAuthError(message) {
+        if (authError) {
+            authError.textContent = message;
+            authError.style.display = 'block';
+        }
+    }
+
+    function logout() {
+        authToken = null;
+        currentUser = null;
+        currentSessionId = null;
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('currentUser');
+        messageContainer.innerHTML = '';
+        if (historyList) historyList.innerHTML = '';
+        showAuth();
+    }
+
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
+
+    // Helper for authenticated API calls
+    async function apiFetch(endpoint, options = {}) {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...(options.headers || {})
+        };
+
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        const response = await fetch(`${API_URL}${endpoint}`, {
+            ...options,
+            headers
+        });
+
+        if (response.status === 401 || response.status === 403) {
+            logout();
+            throw new Error('Session expired. Please log in again.');
+        }
+
+        return response;
+    }
+
+    // ──────────────────────────────────────────
+    // CLEAR CHATS
+    // ──────────────────────────────────────────
+
+    if (clearChatsBtn) {
+        clearChatsBtn.addEventListener('click', async () => {
+            if (confirm('Are you sure you want to delete all conversations? This cannot be undone.')) {
+                try {
+                    await apiFetch('/chat/sessions', { method: 'DELETE' });
+                    currentSessionId = null;
+                    messageContainer.innerHTML = '';
+                    loadSidebar();
+                    addMessage("Hello! I'm IntelliChat. How can I help you today?", 'bot');
+                } catch (err) {
+                    console.error('Error clearing chats:', err);
+                    alert('Failed to clear chats: ' + err.message);
+                }
+            }
+        });
+    }
 
     loadSettings();
 
     // Image Attachment Logic
-    attachmentBtn.addEventListener('click', () => imageUpload.click());
+    if (attachmentBtn) attachmentBtn.addEventListener('click', () => imageUpload.click());
 
-    imageUpload.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                selectedImageBase64 = event.target.result;
-                imagePreview.src = selectedImageBase64;
-                imagePreviewContainer.style.display = 'flex';
-            };
-            reader.readAsDataURL(file);
-        }
-    });
+    if (imageUpload) {
+        imageUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    selectedImageBase64 = event.target.result;
+                    imagePreview.src = selectedImageBase64;
+                    imagePreviewContainer.style.display = 'flex';
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+    }
 
-    removeImageBtn.addEventListener('click', () => {
-        selectedImageBase64 = null;
-        imagePreview.src = '';
-        imagePreviewContainer.style.display = 'none';
-        imageUpload.value = '';
-    });
+    if (removeImageBtn) {
+        removeImageBtn.addEventListener('click', () => {
+            selectedImageBase64 = null;
+            imagePreview.src = '';
+            imagePreviewContainer.style.display = 'none';
+            imageUpload.value = '';
+        });
+    }
 
-    // Theme Toggle Logic (DEPRECATED: Now handled via settings modal, but keeping for compatibility if button exists)
+    // Theme Toggle (legacy)
     if (themeToggle) {
         themeToggle.addEventListener('click', () => {
             const currentTheme = document.documentElement.getAttribute('data-theme');
@@ -202,49 +367,209 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function addMessage(text, role = 'user', imageUrl = null) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role}`;
+    // ──────────────────────────────────────────
+    // MARKDOWN / MERMAID / HIGHLIGHTING
+    // ──────────────────────────────────────────
 
+    if (window.marked) {
+        const markedOptions = {
+            breaks: true,
+            gfm: true
+        };
+        
+        if (window.hljs) {
+            // Newer marked versions use extensions or don't support highlight in setOptions
+            // but for compatibility with older ones:
+            if (typeof marked.setOptions === 'function') {
+                marked.setOptions({
+                    ...markedOptions,
+                    highlight: function (codeOrObj, language) {
+                        let code = typeof codeOrObj === 'object' ? codeOrObj.text : codeOrObj;
+                        let lang = typeof codeOrObj === 'object' ? (codeOrObj.lang || codeOrObj.language) : language;
+                        
+                        if (lang === 'mermaid') return code;
+                        if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+                        return hljs.highlightAuto(code).value;
+                    }
+                });
+            }
+        } else if (typeof marked.setOptions === 'function') {
+            marked.setOptions(markedOptions);
+        }
+    }
+
+    function escapeHtml(value) {
+        if (!value) return '';
+        return value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function isMermaidStartLine(line) {
+        const startLine = (line || '').trim();
+        if (!startLine) return false;
+        const patterns = [
+            /^graph(?:\s+(?:TB|BT|RL|LR|TD))?\b/i, /^flowchart\b/i, /^sequenceDiagram\b/i,
+            /^classDiagram\b/i, /^stateDiagram(?:-v2)?\b/i, /^erDiagram\b/i, /^journey\b/i,
+            /^gantt\b/i, /^pie\b/i, /^mindmap\b/i, /^timeline\b/i, /^gitGraph\b/i,
+            /^quadrantChart\b/i, /^requirementDiagram\b/i, /^C4(?:Context|Container|Component|Dynamic|Deployment)\b/i
+        ];
+        return patterns.some((p) => p.test(startLine));
+    }
+
+    function extractImplicitMermaidFromParagraph(paragraphEl) {
+        if (!paragraphEl) return null;
+        const rawText = (paragraphEl.innerText || '').replace(/\r/g, '').replace(/\u00a0/g, ' ');
+        if (!rawText.trim()) return null;
+        const lines = rawText.split('\n').map((l) => l.replace(/\s+$/g, ''));
+        while (lines.length && !lines[0].trim()) lines.shift();
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        if (lines.length < 2) return null;
+        let labelLine = null;
+        let firstLine = lines[0].trim();
+        if (/mermaid/i.test(firstLine) && lines[1] && isMermaidStartLine(lines[1].trim())) {
+            labelLine = lines.shift().trim();
+            firstLine = lines[0] ? lines[0].trim() : '';
+        }
+        if (!isMermaidStartLine(firstLine)) return null;
+        const hasDiagramSignal = lines.slice(1).some((l) => /(-->|==>|--|::|:|[\[\]{}()|])/g.test(l));
+        if (!hasDiagramSignal) return null;
+        return { source: lines.join('\n').trim(), labelLine };
+    }
+
+    function getActiveTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    }
+
+    function initializeMermaid(force = false) {
+        if (!window.mermaid) return false;
+        const activeTheme = getActiveTheme();
+        if (!force && mermaidTheme === activeTheme) return true;
+        window.mermaid.initialize({ startOnLoad: false, theme: activeTheme === 'light' ? 'default' : 'dark', securityLevel: 'loose', suppressErrorRendering: true });
+        mermaidTheme = activeTheme;
+        return true;
+    }
+
+    function highlightCodeBlocks(scopeEl) {
+        if (!window.hljs || !scopeEl) return;
+        scopeEl.querySelectorAll('pre code').forEach((block) => {
+            if (block.classList.contains('language-mermaid') || block.classList.contains('lang-mermaid')) return;
+            hljs.highlightElement(block);
+        });
+    }
+
+    async function renderMermaidDiagrams(scopeEl) {
+        if (!scopeEl || !initializeMermaid()) return;
+        const renderItems = [];
+        scopeEl.querySelectorAll('pre code.language-mermaid, pre code.lang-mermaid, pre code[class*="language-mermaid"]').forEach((codeBlock) => {
+            const preBlock = codeBlock.closest('pre');
+            if (!preBlock) return;
+            const source = codeBlock.textContent.trim();
+            if (!source) return;
+            renderItems.push({ source, targetEl: preBlock });
+        });
+        scopeEl.querySelectorAll('.message-text p').forEach((paragraphEl) => {
+            const detected = extractImplicitMermaidFromParagraph(paragraphEl);
+            if (!detected || !detected.source) return;
+            if (detected.labelLine) {
+                paragraphEl.textContent = detected.labelLine;
+                const placeholder = document.createElement('div');
+                paragraphEl.insertAdjacentElement('afterend', placeholder);
+                renderItems.push({ source: detected.source, targetEl: placeholder });
+                return;
+            }
+            renderItems.push({ source: detected.source, targetEl: paragraphEl });
+        });
+        if (renderItems.length === 0) return;
+        const tasks = renderItems.map(async ({ source, targetEl }) => {
+            if (!targetEl || !targetEl.isConnected) return;
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mermaid-wrapper';
+            const diagramHost = document.createElement('div');
+            diagramHost.className = 'mermaid-diagram';
+            wrapper.appendChild(diagramHost);
+            targetEl.replaceWith(wrapper);
+            const renderId = `mermaid-${Date.now()}-${++mermaidRenderSequence}`;
+            try {
+                const { svg, bindFunctions } = await window.mermaid.render(renderId, source);
+                diagramHost.innerHTML = svg;
+                if (typeof bindFunctions === 'function') bindFunctions(diagramHost);
+            } catch (error) {
+                console.warn('Mermaid render failed', error);
+                wrapper.classList.add('mermaid-error');
+                wrapper.innerHTML = `<pre><code class="language-mermaid">${escapeHtml(source)}</code></pre>`;
+            }
+        });
+        await Promise.allSettled(tasks);
+        highlightCodeBlocks(scopeEl);
+    }
+
+    function renderBotMessage(messageDiv, text, options = {}) {
+        if (!messageDiv) return;
+        const { renderMermaid = true } = options;
+        const contentDiv = messageDiv.querySelector('.message-text');
+        if (!contentDiv) return;
+        const contentText = String(text || '');
+        contentDiv.innerHTML = window.marked ? marked.parse(contentText) : contentText;
+        highlightCodeBlocks(messageDiv);
+        if (renderMermaid) void renderMermaidDiagrams(messageDiv);
+    }
+
+    function rerenderBotMessages() {
+        const botMessages = messageContainer.querySelectorAll('.message.bot[data-raw-bot-text]');
+        botMessages.forEach((messageDiv) => {
+            renderBotMessage(messageDiv, messageDiv.dataset.rawBotText || '', { renderMermaid: true });
+        });
+    }
+
+    initializeMermaid();
+
+    // ──────────────────────────────────────────
+    // MESSAGE DISPLAY
+    // ──────────────────────────────────────────
+
+    function addMessage(text, role = 'user', imageUrl = null, id = null, options = {}) {
+        let messageDiv = id ? document.getElementById(id) : null;
+        if (!messageDiv) {
+            messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            if (id) messageDiv.id = id;
+            messageContainer.appendChild(messageDiv);
+        }
         const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-        // Parse markdown only for the bot
-        let formattedText = text;
-        if (role === 'bot') {
-            formattedText = marked.parse(text);
-        }
-
+        const { renderMermaid = true } = options;
+        const isBot = role === 'bot';
+        const safeText = String(text || '');
+        const formattedText = isBot && safeText && window.marked ? marked.parse(safeText) : safeText;
         let imageHtml = '';
-        if (imageUrl) {
-            imageHtml = `<img src="${imageUrl}" class="message-image" alt="Uploaded image">`;
-        }
+        if (imageUrl) imageHtml = `<img src="${imageUrl}" class="message-image" alt="Uploaded image">`;
 
         messageDiv.innerHTML = `
             <div class="message-content">
                 ${imageHtml}
-                ${formattedText ? `<div>${formattedText}</div>` : ''}
+                ${formattedText ? `<div class="message-text">${formattedText}</div>` : '<div class="message-text"></div>'}
                 <span class="timestamp">${timestamp}</span>
             </div>
         `;
 
-        messageContainer.appendChild(messageDiv);
+        if (isBot) {
+            messageDiv.dataset.rawBotText = text || '';
+            highlightCodeBlocks(messageDiv);
+            if (renderMermaid) void renderMermaidDiagrams(messageDiv);
+        }
         messageContainer.scrollTop = messageContainer.scrollHeight;
+        return messageDiv;
     }
 
     function showTyping() {
-        typingStatus.textContent = 'Typing...';
+        typingStatus.textContent = 'Thinking...';
         const typingDiv = document.createElement('div');
         typingDiv.className = 'message bot typing';
         typingDiv.id = 'typing-indicator';
-        typingDiv.innerHTML = `
-            <div class="message-content">
-                <div class="typing-dots">
-                    <div class="dot"></div>
-                    <div class="dot"></div>
-                    <div class="dot"></div>
-                </div>
-            </div>
-        `;
+        typingDiv.innerHTML = `<div class="message-content"><div class="typing-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>`;
         messageContainer.appendChild(typingDiv);
         messageContainer.scrollTop = messageContainer.scrollHeight;
     }
@@ -252,193 +577,187 @@ document.addEventListener('DOMContentLoaded', () => {
     function hideTyping() {
         typingStatus.textContent = 'Ready to assist';
         const typingDiv = document.getElementById('typing-indicator');
-        if (typingDiv) {
-            typingDiv.remove();
-        }
+        if (typingDiv) typingDiv.remove();
     }
 
-    const SUPABASE_URL = "https://ftxpnywtllgklbpxgcxu.supabase.co"; // REPLACE: Found in Supabase Project Settings > API
-    const SUPABASE_ANON_KEY = "sb_publishable_AMGOrzoXnukOQAQA_fPywQ_W3jN2TLH"; // REPLACE: Found in Supabase Project Settings > API
+    // ──────────────────────────────────────────
+    // SIDEBAR (backend-backed)
+    // ──────────────────────────────────────────
 
-    // Initialize Supabase Client
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-    // Sidebar Logic
     async function loadSidebar() {
-        const { data, error } = await supabase
-            .from('chat_sessions')
-            .select('*')
-            .order('created_at', { ascending: false });
-            
-        if (data && historyList) {
+        if (!historyList || !authToken) return;
+
+        try {
+            const response = await apiFetch('/chat/sessions');
+            if (!response.ok) return;
+            const sessions = await response.json();
+
             historyList.innerHTML = '';
-            data.forEach(session => {
+            sessions.forEach(session => {
                 const item = document.createElement('div');
-                item.className = `history-item ${session.id === sessionId ? 'active' : ''}`;
-                
+                item.className = `history-item ${session.id === currentSessionId ? 'active' : ''}`;
+
                 const titleDiv = document.createElement('div');
                 titleDiv.className = 'history-title';
                 titleDiv.textContent = session.title || 'New Chat';
-                
+
                 const snippetDiv = document.createElement('div');
                 snippetDiv.className = 'history-snippet';
-                snippetDiv.textContent = '...';
-                
+                snippetDiv.textContent = new Date(session.created_at).toLocaleDateString();
+
                 item.appendChild(titleDiv);
                 item.appendChild(snippetDiv);
-                
                 item.onclick = () => switchSession(session.id);
                 historyList.appendChild(item);
-
-                // Fetch latest message asynchronously
-                supabase.from('chat_messages')
-                    .select('content')
-                    .eq('session_id', session.id)
-                    .order('created_at', { ascending: false })
-                    .limit(1)
-                    .then(({ data: msgData }) => {
-                        if (msgData && msgData.length > 0) {
-                            const snippet = msgData[0].content;
-                            snippetDiv.textContent = snippet.length > 35 ? snippet.substring(0, 35) + '...' : snippet;
-                        } else {
-                            snippetDiv.textContent = 'New conversation';
-                        }
-                    })
-                    .catch(() => {
-                        snippetDiv.textContent = 'New conversation';
-                    });
             });
+        } catch (err) {
+            console.error('Error loading sidebar:', err);
         }
     }
 
-    function switchSession(id) {
-        if (sessionId === id) return;
-        sessionId = id;
-        localStorage.setItem('chat_session_id', id);
-        chatHistory = [];
+    async function switchSession(id) {
+        if (currentSessionId === id) return;
+        currentSessionId = id;
         messageContainer.innerHTML = '';
+
+        try {
+            const response = await apiFetch(`/chat/sessions/${id}/messages`);
+            if (!response.ok) return;
+            const messages = await response.json();
+
+            messages.forEach(msg => {
+                addMessage(msg.content, msg.role === 'assistant' ? 'bot' : 'user');
+            });
+        } catch (err) {
+            console.error('Error loading messages:', err);
+        }
+
         loadSidebar();
-        loadChatHistory();
     }
 
     if (newChatBtn) {
-        newChatBtn.addEventListener('click', () => {
-            const newId = crypto.randomUUID();
-            sessionId = newId;
-            localStorage.setItem('chat_session_id', newId);
-            chatHistory = [];
-            messageContainer.innerHTML = ''; // Start pristine
-            supabase.from('chat_sessions').insert({ id: newId, title: 'New Chat' }).then(() => loadSidebar());
-            addMessage("Hello! I'm IntelliChat. How can I help you today?", 'bot');
+        newChatBtn.addEventListener('click', async () => {
+            if (!authToken) return showAuth();
+
+            try {
+                const response = await apiFetch('/chat/sessions', {
+                    method: 'POST',
+                    body: JSON.stringify({ title: 'New Chat' })
+                });
+
+                if (!response.ok) throw new Error('Failed to create session');
+                const session = await response.json();
+
+                currentSessionId = session.id;
+                messageContainer.innerHTML = '';
+                addMessage("Hello! I'm IntelliChat. How can I help you today?", 'bot');
+                loadSidebar();
+            } catch (err) {
+                console.error('Error creating session:', err);
+                alert('Failed to create new chat: ' + err.message);
+            }
         });
     }
 
-    // Get or Create Session ID
-    let sessionId = localStorage.getItem('chat_session_id');
-    if (!sessionId) {
-        sessionId = crypto.randomUUID();
-        localStorage.setItem('chat_session_id', sessionId);
-        // Create session in database
-        supabase.from('chat_sessions').insert({ id: sessionId }).then();
-    }
-
-    // Keep track of the conversation history for the AI model
-    let chatHistory = [];
-
-    // Load existing history from database
-    async function loadChatHistory() {
-        const { data, error } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .eq('session_id', sessionId)
-            .order('created_at', { ascending: true });
-        
-        if (data && data.length > 0) {
-            messageContainer.innerHTML = ''; // clear default greeting
-            data.forEach(msg => {
-                chatHistory.push({ role: msg.role === 'model' ? 'model' : 'user', parts: [{ text: msg.content }] });
-                // Pass false to prevent infinite scrolling on load, mostly optional
-                addMessage(msg.content, msg.role === 'model' ? 'bot' : 'user');
-            });
-        }
-    }
-    loadSidebar();
-    loadChatHistory();
+    // ──────────────────────────────────────────
+    // AI RESPONSE (streaming via backend)
+    // ──────────────────────────────────────────
 
     async function fetchAIResponse(userMsg, imageBase64 = null) {
         showTyping();
 
         try {
-            const isFirstMessage = chatHistory.length === 0;
+            if (!authToken) throw new Error('Please log in first.');
 
-            // Append the new user message to the history
-            const parts = [{ text: userMsg || "Analyzing the attached image." }];
-            chatHistory.push({ role: "user", parts: parts });
-            
-            // Save to Supabase Database
-            supabase.from('chat_messages').insert({ 
-                session_id: sessionId, 
-                role: 'user', 
-                content: userMsg || "[Image Attached]" 
-            }).then();
-
-            if (isFirstMessage) {
-                // Background task to generate title (always use Gemini for this to keep it consistent and server-side)
-                fetch(`${SUPABASE_URL}/functions/v1/chat`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-                        "apikey": SUPABASE_ANON_KEY
-                    },
-                    body: JSON.stringify({ messages: chatHistory, is_title_generation: true })
-                }).then(res => res.json()).then(data => {
-                    if (data.response) {
-                        const newTitle = data.response.replace(/["']/g, "").trim();
-                        supabase.from('chat_sessions').update({ title: newTitle }).eq('id', sessionId).then(() => loadSidebar());
-                    }
+            // Create session if none exists
+            if (!currentSessionId) {
+                const sessionRes = await apiFetch('/chat/sessions', {
+                    method: 'POST',
+                    body: JSON.stringify({ title: userMsg.substring(0, 50) || 'New Chat' })
                 });
+                if (!sessionRes.ok) throw new Error('Failed to create chat session');
+                const session = await sessionRes.json();
+                currentSessionId = session.id;
             }
 
-            let generatedText = "";
-
-            // Call Gemini via Supabase
-            const response = await fetch(`${SUPABASE_URL}/functions/v1/chat`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-                    "apikey": SUPABASE_ANON_KEY
-                },
-                body: JSON.stringify({ 
-                    messages: chatHistory, 
-                    custom_system_prompt: settings.systemPrompt,
-                    model: settings.model,
-                    image: imageBase64
-                })
-            });
-            
-            // Clear image preview UI
+            // Clear image preview
             if (selectedImageBase64) {
                 removeImageBtn.click();
                 selectedImageBase64 = null;
             }
 
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || "Gemini API error");
-            generatedText = data.response;
+            // Call streaming endpoint
+            const response = await fetch(`${API_URL}/chat/sessions/${currentSessionId}/messages/stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                },
+                body: JSON.stringify({
+                    message: userMsg || "Analyzing the attached image.",
+                    model: settings.preferredModel || "gemini"
+                })
+
+            });
+
+            if (response.status === 401 || response.status === 403) {
+                logout();
+                throw new Error('Session expired. Please log in again.');
+            }
+
+            if (!response.ok) {
+                let errorMsg = `Error ${response.status}: `;
+                try {
+                    const errorData = await response.json();
+                    errorMsg += errorData.detail || response.statusText;
+                } catch (e) {
+                    errorMsg += await response.text() || response.statusText;
+                }
+                throw new Error(errorMsg);
+            }
 
             hideTyping();
 
-            if (generatedText) {
-                addMessage(generatedText, 'bot');
-                // Append the AI's response to the history so it remembers what it said
-                chatHistory.push({ role: "model", parts: [{ text: generatedText }] });
-                // Save AI response to Supabase Database
-                supabase.from('chat_messages').insert({ session_id: sessionId, role: 'model', content: generatedText }).then();
+            // Handle streaming response
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = "";
+            const botMessageId = 'bot-msg-' + Date.now();
+            let messageAdded = false;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                fullText += chunk;
+
+                if (!messageAdded) {
+                    const messageDiv = addMessage(fullText, 'bot', null, botMessageId, { renderMermaid: false });
+                    messageDiv.classList.add('streaming');
+                    messageAdded = true;
+                } else {
+                    const messageDiv = document.getElementById(botMessageId);
+                    if (messageDiv) {
+                        messageDiv.dataset.rawBotText = fullText;
+                        renderBotMessage(messageDiv, fullText, { renderMermaid: false });
+                    }
+                }
+                messageContainer.scrollTop = messageContainer.scrollHeight;
             }
+
+            // Final render
+            const finalMessageDiv = document.getElementById(botMessageId);
+            if (finalMessageDiv) {
+                finalMessageDiv.classList.remove('streaming');
+                finalMessageDiv.dataset.rawBotText = fullText;
+                renderBotMessage(finalMessageDiv, fullText, { renderMermaid: true });
+            }
+
+            // Refresh sidebar to show updated title
+            loadSidebar();
         } catch (error) {
-            console.error("AI Error: ", error);
+            console.error("AI Error:", error);
             hideTyping();
             addMessage(`I apologize, but I encountered an error: ${error.message}`, 'bot');
         }
@@ -448,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const text = userInput.value.trim();
         if (text || selectedImageBase64) {
             addMessage(text, 'user', selectedImageBase64);
-            const currentImage = selectedImageBase64; // local copy before cleanup
+            const currentImage = selectedImageBase64;
             userInput.value = '';
             fetchAIResponse(text, currentImage);
         }
@@ -462,6 +781,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Initial greeting hover effect or something extra
+    // ──────────────────────────────────────────
+    // INITIALIZATION
+    // ──────────────────────────────────────────
+
+    async function initializeApp() {
+        if (profileName && currentUser) {
+            profileName.textContent = currentUser.username || currentUser.email;
+        }
+
+        await loadSidebar();
+
+        // Load first session or show welcome
+        try {
+            const response = await apiFetch('/chat/sessions');
+            if (response.ok) {
+                const sessions = await response.json();
+                if (sessions.length > 0) {
+                    await switchSession(sessions[0].id);
+                } else {
+                    addMessage("Hello! I'm IntelliChat. How can I help you today?", 'bot');
+                }
+            }
+        } catch (err) {
+            addMessage("Hello! I'm IntelliChat. How can I help you today?", 'bot');
+        }
+    }
+
+    // Initialize UX/UI Enhancements
+    if (typeof initializeUXEnhancements === 'function') {
+        initializeUXEnhancements();
+    }
+
+    // Check auth state
+    if (authToken && currentUser) {
+        hideAuth();
+        initializeApp();
+    } else {
+        showAuth();
+    }
+
     console.log("IntelliChat UI Initialized. Ready for support.");
 });
