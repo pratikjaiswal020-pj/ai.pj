@@ -3,6 +3,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // CONFIGURATION
     // ──────────────────────────────────────────
     const API_URL = 'http://127.0.0.1:5000/api';
+    
+    // Robust URL construction helper
+    const getFullUrl = (endpoint) => {
+        const base = API_URL.replace(/\/+$/, '');
+        const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+        return `${base}${path}`;
+    };
     let authToken = localStorage.getItem('authToken');
     let currentUser = JSON.parse(localStorage.getItem('currentUser') || 'null');
 
@@ -19,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const settingsModal = document.getElementById('settings-modal');
     const closeSettingsBtn = document.getElementById('close-settings-btn');
     const systemPromptInput = document.getElementById('system-prompt-input');
-    const modelSelect = document.getElementById('model-select');
+
 
     const themeSelect = document.getElementById('theme-select');
     const fontSizeSelect = document.getElementById('font-size-select');
@@ -27,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const showTimestampsToggle = document.getElementById('show-timestamps-toggle');
     const clearChatsBtn = document.getElementById('clear-chats-btn');
     const attachmentBtn = document.getElementById('attachment-btn');
+    const voiceBtn = document.getElementById('voice-btn');
     const imageUpload = document.getElementById('image-upload');
     const imagePreviewContainer = document.getElementById('image-preview-container');
     const imagePreview = document.getElementById('image-preview');
@@ -39,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const authPassword = document.getElementById('auth-password');
     const authUsername = document.getElementById('auth-username-group');
     const authUsernameInput = document.getElementById('auth-username');
-    const authSubmitBtn = document.getElementById('auth-submit-btn');
+    const authSubmitBtn = document.getElementById('auth-submit-btn') || document.getElementById('auth-submit');
     const authToggleBtn = document.getElementById('auth-toggle-btn');
     const authError = document.getElementById('auth-error');
     const profileName = document.querySelector('.profile-name');
@@ -47,6 +55,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isLoginMode = true;
     let selectedImageBase64 = null;
+    let speechRecognition = null;
+    let isSpeechListening = false;
+    let speechBaseText = '';
+    let speechRestartPending = false;
+    let speechStoppedManually = false;
+    let noSpeechRetryCount = 0;
     let mermaidTheme = null;
     let mermaidRenderSequence = 0;
     let currentSessionId = null;
@@ -57,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let settings = {
         systemPrompt: '',
-        preferredModel: 'gemini',
+        preferredModel: 'gemma',
         theme: 'dark',
         fontSize: '15px',
         enterToSend: true,
@@ -70,8 +84,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (saved) {
             settings = { ...settings, ...JSON.parse(saved) };
         }
+        if (!["gemma", "moondream"].includes(settings.preferredModel)) {
+            settings.preferredModel = "gemma";
+        }
         if (systemPromptInput) systemPromptInput.value = settings.systemPrompt;
-        if (modelSelect) modelSelect.value = settings.preferredModel || 'gemini';
+
         if (themeSelect) themeSelect.value = settings.theme;
         if (fontSizeSelect) fontSizeSelect.value = settings.fontSize;
         if (enterToSendToggle) enterToSendToggle.checked = settings.enterToSend;
@@ -83,7 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function saveSettings() {
         settings = {
             systemPrompt: systemPromptInput ? systemPromptInput.value : '',
-            preferredModel: modelSelect ? modelSelect.value : 'gemini',
+            preferredModel: settings.preferredModel || 'gemma',
             theme: themeSelect ? themeSelect.value : 'dark',
             fontSize: fontSizeSelect ? fontSizeSelect.value : '15px',
             enterToSend: enterToSendToggle ? enterToSendToggle.checked : true,
@@ -113,17 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
             rerenderBotMessages();
         }
 
-        // Update active model badge
-        const activeModelBadge = document.getElementById('active-model-badge');
-        if (activeModelBadge) {
-            const modelNames = {
-                'gemini': 'Gemini 2.0',
-                'claude': 'Claude 3.5',
-                'openai': 'GPT-4',
-                'gemma': 'Gemma 4'
-            };
-            activeModelBadge.textContent = modelNames[settings.preferredModel] || 'Gemini 2.0';
-        }
+
     }
 
     // Modal Events
@@ -182,7 +189,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (guestLoginBtn) {
         guestLoginBtn.addEventListener('click', async () => {
             try {
-                const response = await fetch(`${API_URL}/auth/guest`, {
+                const url = getFullUrl('/auth/guest');
+                console.log(`[API] Guest login: ${url}`);
+                const response = await fetch(url, {
                     method: 'GET',
                     headers: { 'Content-Type': 'application/json' }
                 });
@@ -232,7 +241,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? { email, password }
                 : { email, password, username: username || email.split('@')[0] };
 
-            const response = await fetch(`${API_URL}${endpoint}`, {
+            const url = getFullUrl(endpoint);
+            console.log(`[API] Auth Request: ${url}`);
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
@@ -294,7 +305,10 @@ document.addEventListener('DOMContentLoaded', () => {
             headers['Authorization'] = `Bearer ${authToken}`;
         }
 
-        const response = await fetch(`${API_URL}${endpoint}`, {
+        const url = getFullUrl(endpoint);
+        console.log(`[API] ${options.method || 'GET'} ${url}`);
+        
+        const response = await fetch(url, {
             ...options,
             headers
         });
@@ -357,6 +371,108 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function setVoiceButtonState(listening) {
+        isSpeechListening = listening;
+        if (!voiceBtn) return;
+        voiceBtn.classList.toggle('listening', listening);
+        const label = listening ? 'Stop voice input' : 'Start voice input';
+        voiceBtn.title = label;
+        voiceBtn.setAttribute('aria-label', label);
+    }
+
+    function initializeSpeechRecognition() {
+        if (!voiceBtn || !userInput) return;
+
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognitionCtor) {
+            voiceBtn.disabled = true;
+            voiceBtn.title = 'Speech recognition is not supported in this browser';
+            voiceBtn.setAttribute('aria-label', 'Speech recognition is not supported in this browser');
+            return;
+        }
+
+        speechRecognition = new SpeechRecognitionCtor();
+        speechRecognition.lang = navigator.language || 'en-US';
+        speechRecognition.interimResults = true;
+        speechRecognition.continuous = false;
+        speechRecognition.maxAlternatives = 1;
+
+        speechRecognition.onstart = () => {
+            speechStoppedManually = false;
+            speechRestartPending = false;
+            speechBaseText = (userInput.value || '').trim();
+            if (speechBaseText) speechBaseText += ' ';
+            setVoiceButtonState(true);
+            if (typingStatus) typingStatus.textContent = 'Listening...';
+        };
+
+        speechRecognition.onresult = (event) => {
+            noSpeechRetryCount = 0;
+            let finalTranscript = '';
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const chunk = event.results[i][0].transcript || '';
+                if (event.results[i].isFinal) {
+                    finalTranscript += chunk;
+                } else {
+                    interimTranscript += chunk;
+                }
+            }
+            const transcript = (finalTranscript + interimTranscript).trim();
+            userInput.value = `${speechBaseText}${transcript}`.trim();
+        };
+
+        speechRecognition.onerror = (event) => {
+            if (event.error === 'no-speech') {
+                if (!speechStoppedManually && noSpeechRetryCount < 2) {
+                    noSpeechRetryCount += 1;
+                    speechRestartPending = true;
+                }
+                return;
+            }
+            console.warn('Speech recognition error:', event.error);
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                alert('Microphone access is blocked. Please allow microphone permission and try again.');
+            }
+        };
+
+        speechRecognition.onend = () => {
+            if (speechRestartPending && !speechStoppedManually) {
+                speechRestartPending = false;
+                try {
+                    speechRecognition.start();
+                    return;
+                } catch (err) {
+                    console.warn('Speech recognition restart failed:', err);
+                }
+            }
+            setVoiceButtonState(false);
+            speechRestartPending = false;
+            if (typingStatus && typingStatus.textContent === 'Listening...') {
+                typingStatus.textContent = 'Ready to assist';
+            }
+            userInput.focus();
+        };
+
+        voiceBtn.addEventListener('click', () => {
+            if (!speechRecognition) return;
+            if (isSpeechListening) {
+                speechStoppedManually = true;
+                speechRestartPending = false;
+                speechRecognition.stop();
+                return;
+            }
+            try {
+                noSpeechRetryCount = 0;
+                speechRecognition.start();
+            } catch (err) {
+                console.warn('Speech recognition start failed:', err);
+            }
+        });
+    }
+
+    initializeSpeechRecognition();
+
     // Theme Toggle (legacy)
     if (themeToggle) {
         themeToggle.addEventListener('click', () => {
@@ -377,25 +493,10 @@ document.addEventListener('DOMContentLoaded', () => {
             gfm: true
         };
         
-        if (window.hljs) {
-            // Newer marked versions use extensions or don't support highlight in setOptions
-            // but for compatibility with older ones:
-            if (typeof marked.setOptions === 'function') {
-                marked.setOptions({
-                    ...markedOptions,
-                    highlight: function (codeOrObj, language) {
-                        let code = typeof codeOrObj === 'object' ? codeOrObj.text : codeOrObj;
-                        let lang = typeof codeOrObj === 'object' ? (codeOrObj.lang || codeOrObj.language) : language;
-                        
-                        if (lang === 'mermaid') return code;
-                        if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
-                        return hljs.highlightAuto(code).value;
-                    }
-                });
-            }
-        } else if (typeof marked.setOptions === 'function') {
+        if (typeof marked.setOptions === 'function') {
             marked.setOptions(markedOptions);
         }
+
     }
 
     function escapeHtml(value) {
@@ -455,7 +556,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function highlightCodeBlocks(scopeEl) {
         if (!window.hljs || !scopeEl) return;
-        scopeEl.querySelectorAll('pre code').forEach((block) => {
+        // Skip elements that already have the 'hljs' class (already processed)
+        scopeEl.querySelectorAll('pre code:not(.hljs)').forEach((block) => {
             if (block.classList.contains('language-mermaid') || block.classList.contains('lang-mermaid')) return;
             hljs.highlightElement(block);
         });
@@ -680,14 +782,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentSessionId = session.id;
             }
 
-            // Clear image preview
+            // Clear image preview (after we keep a local copy in imageBase64)
             if (selectedImageBase64) {
                 removeImageBtn.click();
                 selectedImageBase64 = null;
             }
 
             // Call streaming endpoint
-            const response = await fetch(`${API_URL}/chat/sessions/${currentSessionId}/messages/stream`, {
+            const url = getFullUrl(`/chat/sessions/${currentSessionId}/messages/stream`);
+            console.log(`[API] Stream: ${url}`);
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -695,7 +799,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
                 body: JSON.stringify({
                     message: userMsg || "Analyzing the attached image.",
-                    model: settings.preferredModel || "gemini"
+                    model: settings.preferredModel || "gemma",
+                    image: imageBase64
                 })
 
             });
@@ -764,6 +869,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function handleSend() {
+        if (isSpeechListening && speechRecognition) {
+            speechStoppedManually = true;
+            speechRestartPending = false;
+            speechRecognition.stop();
+        }
         const text = userInput.value.trim();
         if (text || selectedImageBase64) {
             addMessage(text, 'user', selectedImageBase64);

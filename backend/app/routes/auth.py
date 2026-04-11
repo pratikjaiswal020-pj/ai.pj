@@ -57,7 +57,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
         db.refresh(db_user)
 
         # Create token
-        access_token = create_access_token(data={"sub": db_user.id})
+        access_token = create_access_token(data={"sub": str(db_user.id)})
 
         return {
             "access_token": access_token,
@@ -92,7 +92,7 @@ async def login(credentials: LoginRequest, db: Session = Depends(get_db)):
             )
 
         # Create token
-        access_token = create_access_token(data={"sub": db_user.id})
+        access_token = create_access_token(data={"sub": str(db_user.id)})
 
         return {
             "access_token": access_token,

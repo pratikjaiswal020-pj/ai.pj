@@ -10,12 +10,25 @@ node_modules/
 
 # Python
 venv/
+.venv/
 backend/venv/
+backend/.venv/
 __pycache__/
 *.py[cod]
 *$py.class
 *.env
 backend/.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
 
 # IDEs
 .vscode/

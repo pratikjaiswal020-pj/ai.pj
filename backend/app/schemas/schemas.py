@@ -36,6 +36,7 @@ class MessageBase(BaseModel):
 class MessageCreate(BaseModel):
     message: str
     model: str = "gemini"
+    image: Optional[str] = None
 
 
 class MessageResponse(MessageBase):

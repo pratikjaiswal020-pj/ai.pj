@@ -165,6 +165,7 @@ async def send_message(
 ):
     """Send message and get AI response (non-streaming)"""
     try:
+        image_data = message_data.image
         session = db.query(ChatSession).filter(
             ChatSession.id == session_id,
             ChatSession.user_id == current_user
@@ -199,15 +200,19 @@ async def send_message(
         ]
 
         # Call AI API based on model selection
-        model = message_data.model.lower()
-        if model in ("gemini", "gemini-2.0-flash", "gemini-2.5-flash"):
+        model = (message_data.model or "gemma").lower()
+        effective_model = "moondream" if image_data else model
+
+        if "moondream" in effective_model:
+            ai_response = await call_ollama_api(api_messages, model="moondream", image=image_data)
+        elif effective_model in ("gemini", "gemini-2.0-flash", "gemini-2.5-flash"):
             ai_response = await call_gemini_api(api_messages)
-        elif model == "claude":
+        elif effective_model == "claude":
             ai_response = await call_claude_api(api_messages)
-        elif model in ("openai", "gpt"):
+        elif effective_model in ("openai", "gpt"):
             ai_response = await call_openai_api(api_messages)
-        elif "gemma" in model:
-            ai_response = await call_ollama_api(api_messages, model="gemma4")
+        elif "gemma" in effective_model:
+            ai_response = await call_ollama_api(api_messages, model="gemma:2b")
         else:
             ai_response = await call_gemini_api(api_messages)
 
@@ -227,12 +232,12 @@ async def send_message(
         db.commit()
 
         # Log usage
-        await log_api_usage(db, current_user, model)
+        await log_api_usage(db, current_user, effective_model)
 
         return {
             "message": message_data.message,
             "response": ai_response,
-            "model": model
+            "model": effective_model
         }
     except HTTPException:
         raise
@@ -253,6 +258,7 @@ async def send_message_stream(
 ):
     """Send message and get AI response (streaming)"""
     try:
+        image_data = message_data.image
         session = db.query(ChatSession).filter(
             ChatSession.id == session_id,
             ChatSession.user_id == current_user
@@ -290,13 +296,16 @@ async def send_message_stream(
             session.title = message_data.message[:50]
             db.commit()
 
-        model = message_data.model.lower()
+        model = (message_data.model or "gemma").lower()
+        effective_model = "moondream" if image_data else model
 
         async def generate():
             full_text = ""
             try:
-                if "gemma" in model:
-                    gen = stream_ollama_api(api_messages, model="gemma4")
+                if "moondream" in effective_model:
+                    gen = stream_ollama_api(api_messages, model="moondream", image=image_data)
+                elif "gemma" in effective_model:
+                    gen = stream_ollama_api(api_messages, model="gemma:2b")
                 else:
                     gen = stream_gemini_api(api_messages)
 
@@ -312,7 +321,7 @@ async def send_message_stream(
                 )
                 db.add(ai_message)
                 db.commit()
-                await log_api_usage(db, current_user, model)
+                await log_api_usage(db, current_user, effective_model)
             except Exception as e:
                 yield f"\n\nERROR: {str(e)}"
 
@@ -349,12 +358,69 @@ SYSTEM_PROMPT = """You are IntelliChat, an elite-level AI assistant powered by a
 
 # ──────────────────────────────────────────
 
-async def call_ollama_api(messages: list, model: str = "gemma") -> str:
-    """Call Local Ollama API (e.g. for Gemma)"""
+def _clean_base64_image(image: str | None) -> str | None:
+    """Strip data URL prefix and return raw base64 image bytes."""
+    if not image:
+        return None
+    return image.split(",", 1)[1] if "," in image else image
+
+
+def _last_user_prompt(messages: list) -> str:
+    """Return the most recent user message for image models."""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            text = (msg.get("content") or "").strip()
+            if text:
+                return text
+    return "Describe this image in detail."
+
+
+async def call_ollama_api(messages: list, model: str = "gemma:2b", image: str = None) -> str:
+    """Call Local Ollama API (Gemma / Moondream)."""
     try:
+        model_lower = (model or "").lower()
+        clean_image = _clean_base64_image(image)
+
+        # Moondream is significantly more stable via /api/generate with smaller context.
+        if "moondream" in model_lower:
+            payload = {
+                "model": "moondream:latest",
+                "prompt": _last_user_prompt(messages),
+                "stream": False,
+                "keep_alive": "0s",
+                "options": {
+                    "num_ctx": 1024,
+                    "temperature": 0.2
+                }
+            }
+            if clean_image:
+                payload["images"] = [clean_image]
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json=payload
+                )
+
+                if response.status_code != 200:
+                    raise Exception(f"Ollama API error: {response.text}")
+
+                data = response.json()
+                text = data.get("response") or ""
+                if text:
+                    return text
+                return data.get("message", {}).get("content", "")
+
         ollama_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for msg in messages:
             ollama_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # If image is provided, add it to the latest user message.
+        if clean_image:
+            for msg in reversed(ollama_messages):
+                if msg["role"] == "user":
+                    msg["images"] = [clean_image]
+                    break
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
@@ -363,8 +429,9 @@ async def call_ollama_api(messages: list, model: str = "gemma") -> str:
                     "model": model,
                     "messages": ollama_messages,
                     "stream": False,
+                    "keep_alive": "0s",
                     "options": {
-                        "num_ctx": 4096,
+                        "num_ctx": 2048,
                         "temperature": 0.7,
                         "top_p": 0.9
                     }
@@ -377,29 +444,89 @@ async def call_ollama_api(messages: list, model: str = "gemma") -> str:
             data = response.json()
             return data["message"]["content"]
     except Exception as e:
-        raise Exception(f"Ollama ({model}) call failed: {str(e)}. Is Ollama running?")
+        error_msg = str(e)
+        if "connection" in error_msg.lower():
+            raise Exception(f"Ollama connection failed. Is Ollama running on {OLLAMA_BASE_URL}?")
+        if "404" in error_msg:
+            raise Exception(f"Model '{model}' not found. Please run 'ollama pull {model}'.")
+        if "unexpectedly stopped" in error_msg.lower() or "resource limitations" in error_msg.lower():
+            raise Exception("Ollama model runner stopped due to resource limits. Close other heavy models or retry with a smaller image.")
+        raise Exception(f"Ollama ({model}) error: {error_msg}")
 
 
-async def stream_ollama_api(messages: list, model: str = "gemma"):
+async def stream_ollama_api(messages: list, model: str = "gemma:2b", image: str = None):
     """Stream from Local Ollama API"""
     try:
+        model_lower = (model or "").lower()
+        clean_image = _clean_base64_image(image)
+
+        if "moondream" in model_lower:
+            payload = {
+                "model": "moondream:latest",
+                "prompt": _last_user_prompt(messages),
+                "stream": True,
+                "keep_alive": "0s",
+                "options": {
+                    "num_ctx": 1024,
+                    "temperature": 0.2
+                }
+            }
+            if clean_image:
+                payload["images"] = [clean_image]
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json=payload
+                ) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        raise Exception(f"Ollama streaming error ({response.status_code}): {error_text.decode()}")
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                            if data.get("error"):
+                                raise Exception(str(data["error"]))
+                            if "response" in data and data["response"]:
+                                yield data["response"]
+                            if data.get("done"):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+            return
+
         ollama_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for msg in messages:
             ollama_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Prepare payload
+        payload = {
+            "model": model,
+            "messages": ollama_messages,
+            "stream": True,
+            "keep_alive": "0s",
+            "options": {
+                "num_ctx": 2048,
+                "temperature": 0.7
+            }
+        }
+
+        # If image is provided, add it to the last user message.
+        if clean_image:
+            for msg in reversed(ollama_messages):
+                if msg["role"] == "user":
+                    msg["images"] = [clean_image]
+                    break
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
                 f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": model,
-                    "messages": ollama_messages,
-                    "stream": True,
-                    "options": {
-                        "num_ctx": 4096,
-                        "temperature": 0.7
-                    }
-                }
+                json=payload
             ) as response:
                 if response.status_code != 200:
                     error_text = await response.aread()
@@ -417,7 +544,16 @@ async def stream_ollama_api(messages: list, model: str = "gemma"):
                     except json.JSONDecodeError:
                         continue
     except Exception as e:
-        yield f"\n\nERROR: {str(e)}. Is Ollama running?"
+        error_msg = str(e)
+        lower = error_msg.lower()
+        if (
+            "terminated" in lower
+            or "unexpectedly stopped" in lower
+            or "resource limitations" in lower
+        ):
+            yield "\n\nERROR: Ollama model runner stopped (resource limit). Try a smaller image and make sure only one large model is active at a time."
+        else:
+            yield f"\n\nERROR: {error_msg}. Is Ollama running?"
 
 
 async def call_gemini_api(messages: list) -> str:
@@ -604,7 +740,7 @@ async def log_api_usage(db: Session, user_id: int, model: str):
     """Log API usage"""
     try:
         estimated_tokens = 500
-        cost_map = {"gemini": 0.0001, "claude": 0.003, "openai": 0.005, "gemma": 0.0}
+        cost_map = {"gemini": 0.0001, "claude": 0.003, "openai": 0.005, "gemma": 0.0, "moondream": 0.0}
         cost_per_token = cost_map.get(model, 0.001) / 1000
         cost = estimated_tokens * cost_per_token
 

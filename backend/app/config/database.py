@@ -23,4 +23,4 @@ Base = declarative_base()
 def init_db(engine):
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
-    print("✅ Database tables initialized")
+    print("Database tables initialized")

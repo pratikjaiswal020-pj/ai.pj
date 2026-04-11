@@ -1,7 +1,15 @@
 // ===================================
 // UX/UI ENHANCEMENTS FOR INTELLICHAT
-// Add these functions to your main.js
 // ===================================
+
+/**
+ * Utility to escape HTML to prevent XSS and security warnings
+ */
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 
 // 1️⃣ COPY CODE BLOCK FUNCTIONALITY
 function setupCodeBlockEnhancements() {
@@ -109,11 +117,14 @@ function setupCodeBlockEnhancements() {
 
         let highlightedCode;
         try {
-            highlightedCode = (safeLang && hljs.getLanguage(safeLang))
-                ? hljs.highlight(safeCode, { language: safeLang, ignoreIllegals: true }).value
-                : hljs.highlightAuto(safeCode).value;
+            // Use highlight.js to process the code
+            if (safeLang && hljs.getLanguage(safeLang)) {
+                highlightedCode = hljs.highlight(safeCode, { language: safeLang, ignoreIllegals: true }).value;
+            } else {
+                highlightedCode = hljs.highlightAuto(safeCode).value;
+            }
         } catch (err) {
-            console.warn('Highlight.js error:', err);
+            console.warn('Highlight.js rendering failed, falling back to escaped text:', err);
             highlightedCode = escapeHtml(safeCode);
         }
 
